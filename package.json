@@ -4,11 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "demo": "tsx src/demo-rpa.ts",
+    "demo": "tsx src/batch-ephemeral.ts",
     "dev": "tsx src/batch-ephemeral.ts"
   },
   "dependencies": {
-    "csv-parse": "^6.1.0",
     "dotenv": "^17.2.3",
     "nodemailer": "^7.0.9",
     "playwright": "^1.56.0"

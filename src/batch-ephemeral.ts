@@ -409,7 +409,9 @@ async function promptSubjectAndConfirm(defaultSubject: string) {
       log(`🧩 SKU ${sku}: parseando HTML…`);
       const parsed = parseFromFile(sku);
       if (!parsed) {
-        log(`⚠️ SKU ${sku}: no se pudo leer out/page-${sku}.html`);
+        log(
+          `⚠️ SKU ${sku}: el HTML guardado no contiene una fila para ese SKU o no se pudo parsear (revisá out/page-${sku}.html)`
+        );
         continue;
       }
       const withTs: RowWithTs = { ...parsed, timestamp: nowISO() };

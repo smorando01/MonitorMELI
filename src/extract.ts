@@ -9,6 +9,15 @@ export type ParsedRecord = {
   titulo: string;
 };
 
+/** Recorta el HTML de la fila que contiene el SKU indicado. */
+function sliceRowForSku(html: string, sku: string): string | null {
+  const rows =
+    html.match(/<div class="sc-list-item-row sc-list-item-row--catalog[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/g) || [];
+  const needle = new RegExp(`\\bSKU\\s*${sku}\\b`, "i");
+  const row = rows.find((r) => needle.test(r));
+  return row || null;
+}
+
 function clean(s?: string | null) {
   return (s || "").replace(/\s+/g, " ").trim();
 }
@@ -21,7 +30,11 @@ function clean(s?: string | null) {
  * - titulo: texto del enlace con class sc-list-item-row-description__title (tolerante a etiquetas internas)
  * - sku: revalida si aparece "SKU <n>"
  */
-export function parseHtmlForSku(html: string, fallbackSku: string): ParsedRecord {
+export function parseHtmlForSku(html: string, fallbackSku: string): ParsedRecord | null {
+  // Intentar limitar el análisis a la fila del SKU; si no aparece, devolvemos null para evitar falsos positivos.
+  const row = sliceRowForSku(html, fallbackSku);
+  if (!row) return null;
+
   const out: ParsedRecord = {
     sku: fallbackSku,
     itemId: "",
@@ -30,10 +43,10 @@ export function parseHtmlForSku(html: string, fallbackSku: string): ParsedRecord
     titulo: "",
   };
 
-  const hay = (pat: RegExp) => pat.test(html);
+  const hay = (pat: RegExp) => pat.test(row);
 
   // --- ITEM_ID (href ?itemId=MLU########)
-  const mItem = html.match(/(?:\?|&)itemId=(MLU\d{6,})\b/i);
+  const mItem = row.match(/(?:\?|&)itemId=(MLU\d{6,})\b/i);
   if (mItem) out.itemId = mItem[1];
 
   // --- ESTADO_COMPETENCIA (tres textos + fallback “COMPITIENDO”)
@@ -46,8 +59,8 @@ export function parseHtmlForSku(html: string, fallbackSku: string): ParsedRecord
   // Soporta variantes: el anchor puede tener tags internas (<span>...) antes del texto
   // Capturamos el innerHTML y luego quitamos tags para quedarnos con texto limpio.
   const mTitleBlock =
-    html.match(/<a[^>]*class="[^"]*\bsc-list-item-row-description__title\b[^"]*"[^>]*>([\s\S]*?)<\/a>/i) ||
-    html.match(/class="sc-list-item-row-description__title"[^>]*>([\s\S]*?)<\/a>/i);
+    row.match(/<a[^>]*class="[^"]*\bsc-list-item-row-description__title\b[^"]*"[^>]*>([\s\S]*?)<\/a>/i) ||
+    row.match(/class="sc-list-item-row-description__title"[^>]*>([\s\S]*?)<\/a>/i);
   if (mTitleBlock) {
     const inner = mTitleBlock[1] || "";
     const textOnly = inner.replace(/<[^>]+>/g, " "); // quita etiquetas internas
@@ -55,7 +68,7 @@ export function parseHtmlForSku(html: string, fallbackSku: string): ParsedRecord
   }
 
   // --- SKU (si viene “SKU 1234” lo revalida)
-  const mSku = html.match(/\bSKU\s+(\d{1,})\b/i);
+  const mSku = row.match(/\bSKU\s+(\d{1,})\b/i);
   if (mSku) out.sku = mSku[1];
 
   // ======= ESTADO_OPERATIVO (mejorado) =======
@@ -72,8 +85,8 @@ export function parseHtmlForSku(html: string, fallbackSku: string): ParsedRecord
       // 3) Switch <input role="switch"> (checked/aria-checked)
       // Buscamos el bloque del switch para no recorrer todo el HTML con regex costosas
       const switchBlock =
-        html.match(/<label[^>]*class="[^"]*sc-list-item-status-switch__switch[^"]*"[^>]*>[\s\S]*?<\/label>/i)?.[0] ||
-        html.match(/<div[^>]*class="[^"]*sc-list-item-status-switch[^"]*"[^>]*>[\s\S]*?<\/div>/i)?.[0] ||
+        row.match(/<label[^>]*class="[^"]*sc-list-item-status-switch__switch[^"]*"[^>]*>[\s\S]*?<\/label>/i)?.[0] ||
+        row.match(/<div[^>]*class="[^"]*sc-list-item-status-switch[^"]*"[^>]*>[\s\S]*?<\/div>/i)?.[0] ||
         "";
 
       if (switchBlock) {
@@ -91,7 +104,9 @@ export function parseHtmlForSku(html: string, fallbackSku: string): ParsedRecord
     }
   }
 
-  return out;
+  // Si no se obtuvo ningún campo significativo, se considera fallo de parseo
+  const hasData = Boolean(out.itemId || out.titulo || out.sku !== fallbackSku);
+  return hasData ? out : null;
 }
 
 /**
@@ -103,4 +118,3 @@ export function parseFromFile(sku: string): ParsedRecord | null {
   const html = fs.readFileSync(path, "utf8");
   return parseHtmlForSku(html, sku);
 }
-
