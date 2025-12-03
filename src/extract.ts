@@ -32,7 +32,7 @@ function inferOperativo(txt: string, ariaChecked?: string | null): ParsedRecord[
 
 function pickItemIdFromHref(href?: string | null) {
   if (!href) return "";
-  const m = href.match(/(?:\\?|&)itemId=(MLU\\d{6,})\\b/i);
+  const m = href.match(/(?:\?|&)itemId=(MLU\d{6,})\b/i);
   return m ? m[1] : "";
 }
 
@@ -46,48 +46,52 @@ function pickTitle(candidates: string[]) {
 }
 
 /**
- * Extrae datos directamente del DOM usando locators semánticos:
- * - filtra el contenedor por texto "SKU <n>"
- * - lee innerText para inferir estados
- * - busca link "Modificar" para itemId
+ * Estrategia de localización relativa:
+ * 1) Espera el texto "SKU <n>".
+ * 2) Desde ese texto, sube por ancestros hasta encontrar un contenedor que tenga un switch o el link "Modificar".
+ * 3) Usa el innerText completo del contenedor para inferir estados y título; el itemId se extrae del href del link "Modificar".
  */
 export async function extractFromPage(page: Page, sku: string): Promise<ParsedRecord | null> {
-  const row = page
-    .locator('[role="listitem"], [role="row"], article, div')
-    .filter({ hasText: new RegExp(`\\bSKU\\s*${sku}\\b`, "i") })
-    .first();
+  const anchor = page.locator(`text=SKU ${sku}`).first();
+  try {
+    await anchor.waitFor({ state: "visible", timeout: 6000 });
+  } catch {
+    return null;
+  }
 
-  if (!(await row.isVisible({ timeout: 4000 }).catch(() => false))) return null;
+  // Contenedor: ancestro que contenga switch o link "Modificar"
+  const card = anchor.locator(
+    'xpath=ancestor::*[descendant::*[@role="switch"] or descendant::a[contains(translate(normalize-space(.),"MODIFICAR","modificar"),"modificar")]][1]'
+  );
+  if (!(await card.isVisible({ timeout: 2000 }).catch(() => false))) return null;
 
-  const text = clean(await row.innerText());
+  const text = clean(await card.innerText());
   if (!text) return null;
 
-  // Título: prioriza headings; si no, el link visible más largo (excluyendo acciones).
+  // Título
   let titulo = "";
   try {
-    const heading = row.getByRole("heading").first();
+    const heading = card.getByRole("heading").first();
     if (await heading.isVisible({ timeout: 1500 }).catch(() => false)) {
       titulo = clean(await heading.innerText());
     }
     if (!titulo) {
-      const linkTexts = await row.getByRole("link").allInnerTexts();
+      const linkTexts = await card.getByRole("link").allInnerTexts();
       titulo = pickTitle(linkTexts);
     }
   } catch {
     // noop
   }
 
-  // Item ID desde link "Modificar"
+  // Item ID desde link "Modificar" (o cualquier href)
   let itemId = "";
   try {
-    const modificar = row.getByRole("link", { name: /modificar/i }).first();
+    const modificar = card.getByRole("link", { name: /modificar/i }).first();
     if (await modificar.isVisible({ timeout: 1500 }).catch(() => false)) {
-      const href = await modificar.getAttribute("href");
-      itemId = pickItemIdFromHref(href);
+      itemId = pickItemIdFromHref(await modificar.getAttribute("href"));
     }
     if (!itemId) {
-      // fallback: cualquier href dentro del contenedor
-      const hrefs = await row.getByRole("link").allAttribute("href");
+      const hrefs = await card.getByRole("link").allAttribute("href");
       for (const href of hrefs) {
         itemId = pickItemIdFromHref(href);
         if (itemId) break;
@@ -97,10 +101,10 @@ export async function extractFromPage(page: Page, sku: string): Promise<ParsedRe
     // noop
   }
 
-  // Estado operativo cerca del toggle
+  // Estado operativo
   let ariaChecked: string | null | undefined = null;
   try {
-    const sw = row.getByRole("switch").first();
+    const sw = card.getByRole("switch").first();
     if (await sw.isVisible({ timeout: 1500 }).catch(() => false)) {
       ariaChecked = await sw.getAttribute("aria-checked");
     }
@@ -109,7 +113,7 @@ export async function extractFromPage(page: Page, sku: string): Promise<ParsedRe
   }
   const estado_operativo = inferOperativo(text, ariaChecked);
 
-  // Estado competencia desde badges/etiquetas
+  // Estado competencia
   const estado_competencia = inferCompetencia(text);
 
   const record: ParsedRecord = {
@@ -120,6 +124,5 @@ export async function extractFromPage(page: Page, sku: string): Promise<ParsedRe
     titulo,
   };
 
-  // Consideramos válido si al menos título o itemId existen.
   return record.titulo || record.itemId ? record : null;
 }
