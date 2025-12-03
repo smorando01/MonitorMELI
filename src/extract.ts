@@ -76,8 +76,19 @@ export async function extractFromPage(page: Page, sku: string): Promise<ParsedRe
       titulo = clean(await heading.innerText());
     }
     if (!titulo) {
-      const linkTexts = await card.getByRole("link").allInnerTexts();
-      titulo = pickTitle(linkTexts);
+      const link = card
+        .locator("a")
+        .filter({ hasNotText: /Modificar/i })
+        .filter({ hasNotText: /Promociones/i })
+        .filter({ hasNotText: /Experiencia de compra/i })
+        .filter({ hasNotText: /\bVer\b/i })
+        .first();
+      if (await link.isVisible({ timeout: 1500 }).catch(() => false)) {
+        titulo = clean(await link.innerText());
+      } else {
+        const linkTexts = await card.getByRole("link").allInnerTexts();
+        titulo = pickTitle(linkTexts);
+      }
     }
   } catch {
     // noop
