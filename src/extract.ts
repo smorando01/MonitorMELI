@@ -71,43 +71,33 @@ export async function extractFromPage(page: Page, sku: string): Promise<ParsedRe
   // Título
   let titulo = "";
   try {
+    const blacklist = [
+      "experiencia de compra",
+      "modificar",
+      "promociones",
+      "ver",
+      "ganando",
+      "perdiendo",
+      "compartiendo primer lugar",
+      "compitiendo",
+      "activa",
+      "pausada",
+      "inactiva",
+      "unidades vendidas",
+      "flex",
+      "unidades",
+      "cuotas",
+      "envío",
+    ];
+
+    // 1) Heading si existe
     const heading = card.getByRole("heading").first();
-    if (await heading.isVisible({ timeout: 1500 }).catch(() => false)) {
+    if (await heading.isVisible({ timeout: 1200 }).catch(() => false)) {
       titulo = clean(await heading.innerText());
     }
+
+    // 2) Línea más larga del innerText (excluyendo frases administrativas)
     if (!titulo) {
-      // Links visibles pero descartando acciones/admin
-      const link = card
-        .locator("a")
-        .filter({ hasNotText: /Modificar/i })
-        .filter({ hasNotText: /Promociones/i })
-        .filter({ hasNotText: /Experiencia de compra/i })
-        .filter({ hasNotText: /\bVer\b/i });
-      const firstLink = link.first();
-      if (await firstLink.isVisible({ timeout: 1500 }).catch(() => false)) {
-        titulo = clean(await firstLink.innerText());
-      }
-    }
-    if (!titulo) {
-      // Fallback: línea de texto más larga del innerText, excluyendo frases administrativas
-      const blacklist = [
-        "experiencia de compra",
-        "modificar",
-        "promociones",
-        "ver",
-        "ganando",
-        "perdiendo",
-        "compartiendo primer lugar",
-        "compitiendo",
-        "activa",
-        "pausada",
-        "inactiva",
-        "unidades vendidas",
-        "flex",
-        "unidades",
-        "cuotas",
-        "envío",
-      ];
       const lines = text
         .split(/\r?\n/)
         .map(clean)
@@ -116,6 +106,18 @@ export async function extractFromPage(page: Page, sku: string): Promise<ParsedRe
         .filter((ln) => ln.length > 5);
       lines.sort((a, b) => b.length - a.length);
       titulo = lines[0] || "";
+    }
+
+    // 3) Links filtrados (por orden en DOM) si aún no hay título
+    if (!titulo) {
+      const candidates = await card.locator("a").allInnerTexts();
+      for (const txt of candidates) {
+        const t = clean(txt);
+        if (!t) continue;
+        if (blacklist.some((b) => t.toLowerCase().includes(b))) continue;
+        titulo = t;
+        break;
+      }
     }
   } catch {
     // noop
