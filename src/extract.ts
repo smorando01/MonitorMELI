@@ -11,11 +11,17 @@ export type ParsedRecord = {
 
 /** Recorta el HTML de la fila que contiene el SKU indicado. */
 function sliceRowForSku(html: string, sku: string): string | null {
-  const rows =
-    html.match(/<div class="sc-list-item-row sc-list-item-row--catalog[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/g) || [];
+  const matches = [...html.matchAll(/<div class="sc-list-item-row(?=[\\s\"])[^>]*>/g)];
+  const starts = matches.map((m) => m.index ?? 0);
+
   const needle = new RegExp(`\\bSKU\\s*${sku}\\b`, "i");
-  const row = rows.find((r) => needle.test(r));
-  return row || null;
+  for (let i = 0; i < starts.length; i++) {
+    const start = starts[i];
+    const end = i + 1 < starts.length ? starts[i + 1] : html.length;
+    const slice = html.slice(start, end);
+    if (needle.test(slice)) return slice;
+  }
+  return null;
 }
 
 function clean(s?: string | null) {
