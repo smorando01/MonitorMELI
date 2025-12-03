@@ -90,13 +90,19 @@ export async function extractFromPage(page: Page, sku: string): Promise<ParsedRe
       "envío",
     ];
 
-    // 1) Heading si existe
+    // 1) Anchor principal con itemId en href (título de la publicación)
+    const titleLink = card.locator("a[href*='itemId=MLU']").first();
+    if (await titleLink.isVisible({ timeout: 1200 }).catch(() => false)) {
+      titulo = clean(await titleLink.innerText());
+    }
+
+    // 2) Heading si existe
     const heading = card.getByRole("heading").first();
-    if (await heading.isVisible({ timeout: 1200 }).catch(() => false)) {
+    if (!titulo && (await heading.isVisible({ timeout: 1200 }).catch(() => false))) {
       titulo = clean(await heading.innerText());
     }
 
-    // 2) Línea más larga del innerText (excluyendo frases administrativas)
+    // 3) Línea más larga del innerText (excluyendo frases administrativas)
     if (!titulo) {
       const lines = text
         .split(/\r?\n/)
@@ -108,7 +114,7 @@ export async function extractFromPage(page: Page, sku: string): Promise<ParsedRe
       titulo = lines[0] || "";
     }
 
-    // 3) Links filtrados (por orden en DOM) si aún no hay título
+    // 4) Links filtrados (por orden en DOM) si aún no hay título
     if (!titulo) {
       const candidates = await card.locator("a").allInnerTexts();
       for (const txt of candidates) {
