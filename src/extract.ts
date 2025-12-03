@@ -76,19 +76,46 @@ export async function extractFromPage(page: Page, sku: string): Promise<ParsedRe
       titulo = clean(await heading.innerText());
     }
     if (!titulo) {
+      // Links visibles pero descartando acciones/admin
       const link = card
         .locator("a")
         .filter({ hasNotText: /Modificar/i })
         .filter({ hasNotText: /Promociones/i })
         .filter({ hasNotText: /Experiencia de compra/i })
-        .filter({ hasNotText: /\bVer\b/i })
-        .first();
-      if (await link.isVisible({ timeout: 1500 }).catch(() => false)) {
-        titulo = clean(await link.innerText());
-      } else {
-        const linkTexts = await card.getByRole("link").allInnerTexts();
-        titulo = pickTitle(linkTexts);
+        .filter({ hasNotText: /\bVer\b/i });
+      const firstLink = link.first();
+      if (await firstLink.isVisible({ timeout: 1500 }).catch(() => false)) {
+        titulo = clean(await firstLink.innerText());
       }
+    }
+    if (!titulo) {
+      // Fallback: línea de texto más larga del innerText, excluyendo frases administrativas
+      const blacklist = [
+        "experiencia de compra",
+        "modificar",
+        "promociones",
+        "ver",
+        "ganando",
+        "perdiendo",
+        "compartiendo primer lugar",
+        "compitiendo",
+        "activa",
+        "pausada",
+        "inactiva",
+        "unidades vendidas",
+        "flex",
+        "unidades",
+        "cuotas",
+        "envío",
+      ];
+      const lines = text
+        .split(/\r?\n/)
+        .map(clean)
+        .filter(Boolean)
+        .filter((ln) => !blacklist.some((b) => ln.toLowerCase().includes(b)))
+        .filter((ln) => ln.length > 5);
+      lines.sort((a, b) => b.length - a.length);
+      titulo = lines[0] || "";
     }
   } catch {
     // noop
