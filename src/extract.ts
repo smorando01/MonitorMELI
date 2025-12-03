@@ -1,5 +1,4 @@
-// src/extract.ts
-import fs from "node:fs";
+import { Locator, Page } from "playwright";
 
 export type ParsedRecord = {
   sku: string;
@@ -9,118 +8,106 @@ export type ParsedRecord = {
   titulo: string;
 };
 
-/** Recorta el HTML de la fila que contiene el SKU indicado. */
-function sliceRowForSku(html: string, sku: string): string | null {
-  const matches = [...html.matchAll(/<div class="sc-list-item-row(?=[\\s\"])[^>]*>/g)];
-  const starts = matches.map((m) => m.index ?? 0);
-
-  const needle = new RegExp(`\\bSKU\\s*${sku}\\b`, "i");
-  for (let i = 0; i < starts.length; i++) {
-    const start = starts[i];
-    const end = i + 1 < starts.length ? starts[i + 1] : html.length;
-    const slice = html.slice(start, end);
-    if (needle.test(slice)) return slice;
-  }
-  return null;
-}
-
 function clean(s?: string | null) {
   return (s || "").replace(/\s+/g, " ").trim();
 }
 
-/**
- * Parser robusto únicamente sobre HTML plano (sin ejecutar JS).
- * - itemId: de href ?itemId=MLU########
- * - estado_competencia: Ganando / Perdiendo / Compartiendo primer lugar (incluye fallback COMPITIENDO)
- * - estado_operativo: Activa / Pausada / Inactiva (label, clases del row o switch)
- * - titulo: texto del enlace con class sc-list-item-row-description__title (tolerante a etiquetas internas)
- * - sku: revalida si aparece "SKU <n>"
- */
-export function parseHtmlForSku(html: string, fallbackSku: string): ParsedRecord | null {
-  // Intentar limitar el análisis a la fila del SKU; si no aparece, devolvemos null para evitar falsos positivos.
-  const row = sliceRowForSku(html, fallbackSku);
-  if (!row) return null;
+async function getFirstText(loc: Locator) {
+  try {
+    const txt = await loc.first().textContent({ timeout: 2000 });
+    return clean(txt || "");
+  } catch {
+    return "";
+  }
+}
 
-  const out: ParsedRecord = {
-    sku: fallbackSku,
+function pickItemId(hrefs: (string | null | undefined)[]) {
+  for (const href of hrefs) {
+    if (!href) continue;
+    const m = href.match(/(?:\?|&)itemId=(MLU\d{6,})\b/i);
+    if (m) return m[1];
+  }
+  return "";
+}
+
+function inferCompetencia(txt: string): ParsedRecord["estado_competencia"] {
+  if (/ganando/i.test(txt)) return "Ganando";
+  if (/perdiendo/i.test(txt)) return "Perdiendo";
+  if (/compartiendo\s+primer\s+lugar/i.test(txt) || /compitiendo/i.test(txt)) return "Compartiendo primer lugar";
+  return "SIN_ESTADO";
+}
+
+function inferOperativo(txt: string, ariaChecked?: string | null): ParsedRecord["estado_operativo"] {
+  if (/activa/i.test(txt)) return "Activa";
+  if (/pausada/i.test(txt)) return "Pausada";
+  if (/inactiva/i.test(txt)) return "Inactiva";
+  if (ariaChecked === "true") return "Activa";
+  if (ariaChecked === "false") return "Pausada";
+  return "UNKNOWN";
+}
+
+/**
+ * Extrae datos directamente del DOM visible (sin guardar HTML en disco).
+ * Estrategia: localizar el texto "SKU <n>", subir al contenedor de la fila
+ * y leer título, itemId, estados y enlaces relativos a esa fila.
+ */
+export async function extractFromPage(page: Page, sku: string): Promise<ParsedRecord | null> {
+  const skuLocator = page.locator(`:text-matches("\\bSKU\\s*${sku}\\b", "i")`).first();
+  if (!(await skuLocator.isVisible().catch(() => false))) return null;
+
+  // Subir al contenedor de la fila. No dependemos de clases exactas.
+  const row = skuLocator.locator(
+    'xpath=ancestor::*[@role="row" or @role="listitem" or contains(@class,"list-item") or contains(@class,"sc-list-item-row")][1]'
+  );
+  if (!(await row.isVisible().catch(() => false))) return null;
+
+  const record: ParsedRecord = {
+    sku,
     itemId: "",
     estado_competencia: "SIN_ESTADO",
     estado_operativo: "UNKNOWN",
     titulo: "",
   };
 
-  const hay = (pat: RegExp) => pat.test(row);
-
-  // --- ITEM_ID (href ?itemId=MLU########)
-  const mItem = row.match(/(?:\?|&)itemId=(MLU\d{6,})\b/i);
-  if (mItem) out.itemId = mItem[1];
-
-  // --- ESTADO_COMPETENCIA (tres textos + fallback “COMPITIENDO”)
-  if (hay(/>\s*Ganando\s*<\//i)) out.estado_competencia = "Ganando";
-  else if (hay(/>\s*Perdiendo\s*<\//i)) out.estado_competencia = "Perdiendo";
-  else if (hay(/>\s*Compartiendo\s+primer\s+lugar\s*<\//i)) out.estado_competencia = "Compartiendo primer lugar";
-  else if (hay(/>\s*COMPITIENDO\s*<\//)) out.estado_competencia = "Compartiendo primer lugar";
-
-  // --- TITULO
-  // Soporta variantes: el anchor puede tener tags internas (<span>...) antes del texto
-  // Capturamos el innerHTML y luego quitamos tags para quedarnos con texto limpio.
-  const mTitleBlock =
-    row.match(/<a[^>]*class="[^"]*\bsc-list-item-row-description__title\b[^"]*"[^>]*>([\s\S]*?)<\/a>/i) ||
-    row.match(/class="sc-list-item-row-description__title"[^>]*>([\s\S]*?)<\/a>/i);
-  if (mTitleBlock) {
-    const inner = mTitleBlock[1] || "";
-    const textOnly = inner.replace(/<[^>]+>/g, " "); // quita etiquetas internas
-    out.titulo = clean(textOnly);
+  // Título: el enlace visible más largo dentro de la fila.
+  try {
+    const linkTexts = (await row.locator('a:visible').allInnerTexts()).map(clean).filter(Boolean);
+    linkTexts.sort((a, b) => b.length - a.length);
+    record.titulo = linkTexts[0] || "";
+  } catch {
+    // noop
   }
 
-  // --- SKU (si viene “SKU 1234” lo revalida)
-  const mSku = row.match(/\bSKU\s+(\d{1,})\b/i);
-  if (mSku) out.sku = mSku[1];
+  // itemId desde cualquier href con ?itemId=
+  try {
+    const hrefs = await row.locator("a[href]").allAttribute("href");
+    record.itemId = pickItemId(hrefs);
+  } catch {
+    // noop
+  }
 
-  // ======= ESTADO_OPERATIVO (mejorado) =======
-  // 1) Label explícito visible
-  if (hay(/sc-list-item-status-switch__label[^>]*>\s*Activa\s*</i)) out.estado_operativo = "Activa";
-  else if (hay(/sc-list-item-status-switch__label[^>]*>\s*Pausada\s*</i)) out.estado_operativo = "Pausada";
-  else if (hay(/sc-list-item-status-switch__label[^>]*>\s*Inactiva\s*</i)) out.estado_operativo = "Inactiva";
-  else {
-    // 2) Clases del row (ej: sc-list-item-row--active / --paused / --inactive)
-    if (hay(/sc-list-item-row[^"]*--active/i)) out.estado_operativo = "Activa";
-    else if (hay(/sc-list-item-row[^"]*--paused/i)) out.estado_operativo = "Pausada";
-    else if (hay(/sc-list-item-row[^"]*--inactive/i)) out.estado_operativo = "Inactiva";
-    else {
-      // 3) Switch <input role="switch"> (checked/aria-checked)
-      // Buscamos el bloque del switch para no recorrer todo el HTML con regex costosas
-      const switchBlock =
-        row.match(/<label[^>]*class="[^"]*sc-list-item-status-switch__switch[^"]*"[^>]*>[\s\S]*?<\/label>/i)?.[0] ||
-        row.match(/<div[^>]*class="[^"]*sc-list-item-status-switch[^"]*"[^>]*>[\s\S]*?<\/div>/i)?.[0] ||
-        "";
+  // Estado de competencia
+  const competenciaTxt = await getFirstText(
+    row.locator(':text-matches("(Ganando|Perdiendo|Compartiendo\\s+primer\\s+lugar|Compitiendo)", "i")')
+  );
+  record.estado_competencia = inferCompetencia(competenciaTxt);
 
-      if (switchBlock) {
-        // checked o aria-checked="true" => Activa
-        if (/role=["']switch["'][^>]*\bchecked\b/i.test(switchBlock)) {
-          out.estado_operativo = "Activa";
-        } else if (/role=["']switch["'][^>]*aria-checked=["']true["']/i.test(switchBlock)) {
-          out.estado_operativo = "Activa";
-        } else if (/role=["']switch["'][^>]*aria-checked=["']false["']/i.test(switchBlock)) {
-          // Si está desmarcado y no detectamos “Inactiva” explícito por clases/label,
-          // lo interpretamos como “Pausada” (comportamiento conservador).
-          out.estado_operativo = "Pausada";
-        }
-      }
+  // Estado operativo: label visible o switch aria-checked
+  const operativoTxt = await getFirstText(
+    row.locator(':text-matches("(Activa|Pausada|Inactiva)", "i")')
+  );
+  let ariaChecked: string | null | undefined = null;
+  try {
+    const switchEl = row.locator('[role="switch"]').first();
+    if ((await switchEl.count()) > 0) {
+      ariaChecked = await switchEl.getAttribute("aria-checked");
     }
+  } catch {
+    // noop
   }
+  record.estado_operativo = inferOperativo(operativoTxt, ariaChecked);
 
-  // Si no se obtuvo ningún campo significativo, se considera fallo de parseo
-  const hasData = Boolean(out.itemId || out.titulo || out.sku !== fallbackSku);
-  return hasData ? out : null;
-}
-
-/**
- * Lee el archivo out/page-<sku>.html y devuelve el registro parseado.
- */
-export function parseFromFile(sku: string): ParsedRecord | null {
-  const path = `out/page-${sku}.html`;
-  if (!fs.existsSync(path)) return null;
-  const html = fs.readFileSync(path, "utf8");
-  return parseHtmlForSku(html, sku);
+  // Validar que obtuvimos algo útil
+  const hasData = record.titulo || record.itemId;
+  return hasData ? record : null;
 }

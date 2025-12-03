@@ -2,7 +2,7 @@ import "dotenv/config";
 import { chromium, Page, BrowserContext } from "playwright";
 import fs from "node:fs";
 import path from "node:path";
-import { parseFromFile, ParsedRecord } from "./extract";
+import { extractFromPage, ParsedRecord } from "./extract";
 import { createInterface } from "readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 
@@ -90,21 +90,6 @@ async function waitForManualLogin(page: Page, maxMs: number) {
 /** URL directa al editor desde itemId */
 function itemUrl(itemId?: string) {
   return itemId ? `${BASE}/syi/core/modify?itemId=${encodeURIComponent(itemId)}` : "";
-}
-
-/** Guarda el HTML “tal cual” para ese SKU en out/page-<sku>.html */
-async function saveHtmlForSku(page: Page, sku: string) {
-  const url = `${PUBS_URL}&search=${encodeURIComponent(sku)}`;
-
-  await page.goto(url, { waitUntil: "domcontentloaded" }).catch(() => {});
-  await humanPause(rand(400, 900));
-  await dismissOverlays(page);
-  try { await humanScroll(page); } catch {}
-  try { await humanMouseMove(page); } catch {}
-
-  const html = await page.content();
-  await ensureDir("out");
-  fs.writeFileSync(path.join("out", `page-${sku}.html`), html, "utf8");
 }
 
 /** Lee skus.csv (una columna, o primera columna). Ignora encabezados y no numéricos */
@@ -403,14 +388,20 @@ async function promptSubjectAndConfirm(defaultSubject: string) {
     try {
       await humanPause(rand(180, 420)); // pausas humanas entre SKUs
 
-      log(`🔎 SKU ${sku}: guardando HTML…`);
-      await saveHtmlForSku(page, sku);
+      const url = `${PUBS_URL}&search=${encodeURIComponent(sku)}`;
+      log(`🔎 SKU ${sku}: cargando listado…`);
+      await page.goto(url, { waitUntil: "domcontentloaded" }).catch(() => {});
+      await humanPause(rand(400, 900));
+      await dismissOverlays(page);
+      try { await humanScroll(page); } catch {}
+      try { await humanMouseMove(page); } catch {}
+      await page.waitForTimeout(rand(250, 500));
 
-      log(`🧩 SKU ${sku}: parseando HTML…`);
-      const parsed = parseFromFile(sku);
+      log(`🧩 SKU ${sku}: extrayendo de DOM…`);
+      const parsed = await extractFromPage(page, sku);
       if (!parsed) {
         log(
-          `⚠️ SKU ${sku}: el HTML guardado no contiene una fila para ese SKU o no se pudo parsear (revisá out/page-${sku}.html)`
+          `⚠️ SKU ${sku}: no se encontró en la página (sin resultados, login/captcha o layout distinto).`
         );
         continue;
       }
